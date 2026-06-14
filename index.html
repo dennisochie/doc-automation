@@ -4,8 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Doc Automation</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- PizZip + Docxtemplater for proper placeholder replacement (preserves images, headers, formatting) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pizzip/3.1.4/pizzip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/docxtemplater/3.44.0/docxtemplater.min.js"></script>
+<!-- FileSaver for downloads -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<!-- JSZip still needed by docx-preview internally -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- docx-preview for the PDF print preview -->
 <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -318,7 +324,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 <div class="toast" id="toast"></div>
 
 <script>
-// ── Template paths (relative to repo root) ─────────────────
+// ── Template paths ─────────────────────────────────────────
 const TEMPLATE_PATHS = {
   spa:        'Automation/SPA/SPA_TEMPLATE.docx',
   fco:        'Automation/FCO/FCO_TEMPLATE.docx',
@@ -332,7 +338,7 @@ const TEMPLATE_PATHS = {
   samSpa:     'Automation/samSPA/samSPA_TEMPLATE.docx',
 };
 
-// ── Cache — templates fetched once, stored in memory ───────
+// ── Template cache — fetch once, store ArrayBuffer ─────────
 const templateCache = {};
 
 async function loadTemplate(id) {
@@ -342,7 +348,7 @@ async function loadTemplate(id) {
     status.className = 'tpl-status loading';
     status.textContent = 'Loading template...';
     const res = await fetch(TEMPLATE_PATHS[id]);
-    if (!res.ok) throw new Error('Not found');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const buf = await res.arrayBuffer();
     templateCache[id] = buf;
     status.className = 'tpl-status ok';
@@ -550,179 +556,214 @@ function toggleLME(){
   toggleEl('inv-lme-price',document.getElementById('inv-lme-check').checked);
 }
 
-// ── Fill & download ────────────────────────────────────────
-function escXml(s){
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
-}
-
-/**
- * Word splits placeholder text like {{DATE}} across multiple <w:r> runs.
- * This function merges consecutive runs that share the same run-properties (<w:rPr>)
- * so that placeholders become whole strings that can be found and replaced.
- *
- * Strategy:
- *  1. Strip XML entities in text nodes so {{ and }} are visible as raw chars.
- *  2. Within each <w:p> paragraph, collapse consecutive <w:r> runs that have
- *     identical <w:rPr> (or both lack one) into a single run.
- *  3. Do the placeholder replacements on the merged XML.
- *  4. Re-escape any replacement values properly.
- */
-function mergeRunsInXml(xml) {
-  // We operate at the paragraph level to avoid merging across paragraphs.
-  return xml.replace(/(<w:p[ >][\s\S]*?<\/w:p>)/g, function(para) {
-    // Repeatedly merge adjacent runs with same rPr until no more merges happen
-    let prev;
-    do {
-      prev = para;
-      para = para.replace(
-        /(<w:r\b[^>]*>)((?:<w:rPr>[\s\S]*?<\/w:rPr>)?)<w:t(?:[^>]*)>([\s\S]*?)<\/w:t><\/w:r>\s*<w:r\b[^>]*>((?:<w:rPr>[\s\S]*?<\/w:rPr>)?)<w:t(?:[^>]*)>([\s\S]*?)<\/w:t><\/w:r>/g,
-        function(match, rOpen, rPr1, t1, rPr2, t2) {
-          // Only merge if both runs have the same rPr (including both being empty)
-          if (rPr1 !== rPr2) return match;
-          const combined = t1 + t2;
-          // Preserve xml:space="preserve" if either text had spaces at edges
-          const space = /^ | $/.test(combined) ? ' xml:space="preserve"' : '';
-          return `${rOpen}${rPr1}<w:t${space}>${combined}</w:t></w:r>`;
-        }
-      );
-    } while (para !== prev);
-    return para;
-  });
-}
+// ══════════════════════════════════════════════════════════════
+// CORE ENGINE — docxtemplater (preserves images, headers, formatting)
+// Templates must use {PLACEHOLDER} syntax (single curly braces)
+// NOT {{PLACEHOLDER}} — docxtemplater uses single braces by default
+// ══════════════════════════════════════════════════════════════
 
 async function fillAndDownload(id, placeholders, filename) {
   const buf = await loadTemplate(id);
   if (!buf) return false;
-  try {
-    const zip = await JSZip.loadAsync(buf);
 
-    // Process document.xml plus any headers/footers
-    const xmlFiles = ['word/document.xml'];
-    zip.forEach((path) => {
-      if (/^word\/(header|footer)\d*\.xml$/.test(path)) xmlFiles.push(path);
+  try {
+    // PizZip loads the docx binary
+    const zip = new PizZip(buf);
+
+    // docxtemplater does the rendering — it works natively with the OOXML
+    // structure so images, headers, footers, tables and all formatting survive
+    const doc = new docxtemplater(zip, {
+      paragraphLoop: true,
+      linebreaks: true,
+      // nullGetter returns empty string for any placeholder not provided,
+      // preventing docxtemplater from throwing on missing keys
+      nullGetter() { return ''; },
     });
 
-    for (const path of xmlFiles) {
-      const file = zip.file(path);
-      if (!file) continue;
-      let xml = await file.async('string');
+    doc.render(placeholders);
 
-      // Step 1: merge fragmented runs so placeholders are whole strings
-      xml = mergeRunsInXml(xml);
+    const outBlob = doc.getZip().generate({
+      type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      compression: 'DEFLATE',
+    });
 
-      // Step 2: replace placeholders
-      for (const [k, v] of Object.entries(placeholders)) {
-        const esc = k.replace(/[{}]/g, '\\$&');
-        xml = xml.replace(new RegExp(esc, 'g'), escXml(String(v ?? '')));
-      }
+    // 1) Download the filled DOCX immediately
+    saveAs(outBlob, filename + '.docx');
 
-      zip.file(path, xml);
-    }
-
-    // Download .docx
-    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-    saveAs(blob, filename + '.docx');
-
-    // PDF — render the filled docx faithfully (preserving layout, images, tables)
-    // then open a print dialog so the user can Save as PDF
-    await renderDocxAndPrint(blob, filename);
+    // 2) Open print/PDF preview overlay
+    await renderDocxAndPrint(outBlob, filename);
 
     return true;
-  } catch (e) {
-    showToast('Error: ' + e.message, true);
+  } catch (err) {
+    console.error('DOCX generation error:', err);
+    // Surface a friendly message — common cause is wrong placeholder syntax
+    const msg = err.properties && err.properties.errors
+      ? err.properties.errors.map(e => e.message).join('; ')
+      : err.message;
+    showToast('Template error: ' + msg, true);
     return false;
   }
 }
 
-/**
- * Renders the filled docx blob using docx-preview inside a hidden iframe,
- * then triggers the browser print dialog so the user can "Save as PDF".
- * This preserves all images, tables, fonts and layout from the template.
- */
+// ══════════════════════════════════════════════════════════════
+// PDF PREVIEW — renders the filled DOCX via docx-preview inside
+// an iframe, then the user can Print → Save as PDF from there.
+// docx-preview preserves the visual layout including images.
+// ══════════════════════════════════════════════════════════════
+
 async function renderDocxAndPrint(blob, filename) {
   return new Promise((resolve) => {
-    // Create a fullscreen overlay with the rendered document
+    // Full-screen overlay
     const overlay = document.createElement('div');
     overlay.id = 'pdf-overlay';
-    overlay.style.cssText = `
-      position:fixed;inset:0;z-index:9999;background:#fff;
-      display:flex;flex-direction:column;overflow:hidden;
-    `;
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:9999', 'background:#fff',
+      'display:flex', 'flex-direction:column', 'overflow:hidden',
+    ].join(';');
 
+    // Toolbar
     const toolbar = document.createElement('div');
-    toolbar.style.cssText = `
-      background:#1a1d27;color:#e8eaf6;padding:12px 16px;
-      display:flex;align-items:center;justify-content:space-between;
-      font-family:'Segoe UI',sans-serif;font-size:14px;flex-shrink:0;
-      border-bottom:1px solid #2e3350;
-    `;
+    toolbar.style.cssText = [
+      'background:#1a1d27', 'color:#e8eaf6', 'padding:10px 16px',
+      'display:flex', 'align-items:center', 'justify-content:space-between',
+      "font-family:'Segoe UI',sans-serif", 'font-size:14px', 'flex-shrink:0',
+      'border-bottom:1px solid #2e3350',
+    ].join(';');
     toolbar.innerHTML = `
       <span>📄 <strong>${filename}</strong> — ready to save as PDF</span>
       <div style="display:flex;gap:10px">
-        <button onclick="window.frames['docx-print-frame'].focus();window.frames['docx-print-frame'].print()"
+        <button
           style="background:#4f7cff;color:#fff;border:none;border-radius:8px;
-                 padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;">
+                 padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;"
+          onclick="(function(){var f=document.getElementById('docx-print-iframe');if(f){f.contentWindow.focus();f.contentWindow.print();}})()">
           🖨️ Save as PDF
         </button>
-        <button onclick="document.getElementById('pdf-overlay').remove()"
+        <button
           style="background:#22263a;color:#e8eaf6;border:1px solid #2e3350;
-                 border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;">
+                 border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;"
+          onclick="document.getElementById('pdf-overlay').remove()">
           ✕ Close
         </button>
       </div>
     `;
 
+    // Iframe — docx-preview renders into this so print captures the real layout
     const iframe = document.createElement('iframe');
-    iframe.name = 'docx-print-frame';
-    iframe.style.cssText = 'flex:1;border:none;background:#fff;';
+    iframe.id = 'docx-print-iframe';
+    iframe.style.cssText = 'flex:1;border:none;width:100%;background:#f0f0f0;';
 
     overlay.appendChild(toolbar);
     overlay.appendChild(iframe);
     document.body.appendChild(overlay);
 
-    // Write a blank page into the iframe first
+    // Write a clean host page into the iframe
     const iDoc = iframe.contentDocument || iframe.contentWindow.document;
     iDoc.open();
     iDoc.write(`<!DOCTYPE html><html><head>
       <style>
-        body{margin:0;padding:20px;background:#f0f0f0;font-family:sans-serif;}
-        #container{background:#fff;max-width:210mm;margin:0 auto;
-                   box-shadow:0 2px 16px rgba(0,0,0,.2);padding:0;}
-        @media print{
-          body{background:#fff;padding:0;}
-          #container{box-shadow:none;max-width:100%;}
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #f0f0f0; font-family: sans-serif; }
+        #container {
+          background: #fff;
+          max-width: 210mm;
+          margin: 20px auto;
+          box-shadow: 0 2px 16px rgba(0,0,0,.2);
+          min-height: 297mm;
+        }
+        @media print {
+          body { background: #fff; }
+          #container { box-shadow: none; max-width: 100%; margin: 0; }
         }
       </style>
     </head><body><div id="container"></div></body></html>`);
     iDoc.close();
 
-    // Use docx-preview to render into the iframe's container div
     const container = iDoc.getElementById('container');
-    const previewOptions = {
+
+    // docx-preview renders faithfully — images, tables, headers all intact
+    docx.renderAsync(blob, container, null, {
       inWrapper: false,
       ignoreWidth: false,
       ignoreHeight: false,
       ignoreFonts: false,
       breakPages: true,
-      useBase64URL: true,       // needed for images to show in iframe
+      useBase64URL: true,   // required for images to render cross-origin in iframe
       useMathMLPolyfill: false,
-    };
-
-    docx.renderAsync(blob, container, null, previewOptions)
-      .then(() => { resolve(); })
-      .catch((err) => {
-        console.warn('docx-preview error:', err);
-        resolve(); // still resolve so docx download isn't blocked
-      });
+    })
+    .then(() => resolve())
+    .catch((err) => {
+      console.warn('docx-preview render warning:', err);
+      resolve(); // don't block DOCX download if preview fails
+    });
   });
 }
+
+// ══════════════════════════════════════════════════════════════
+// IMPORTANT — PLACEHOLDER SYNTAX FOR YOUR TEMPLATES
+//
+// docxtemplater uses {PLACEHOLDER} (single curly braces) by default.
+// Your old code used {{PLACEHOLDER}} (double braces).
+//
+// You have two options:
+//   A) Update your .docx templates to use {DATE}, {QUANTITY}, etc.
+//   B) Keep {{}} in templates and configure docxtemplater with a custom
+//      parser (see the delimiters option below).
+//
+// Option B — keep existing templates unchanged — is active below.
+// The delimiters are set to ["{{", "}}"] so your templates work as-is.
+// ══════════════════════════════════════════════════════════════
+
+// Override fillAndDownload to use {{ }} delimiters matching existing templates
+const _fillAndDownloadOrig = fillAndDownload;
+(function() {
+  // We redefine fillAndDownload to pass custom delimiters
+  window.fillAndDownload = async function(id, placeholders, filename) {
+    const buf = await loadTemplate(id);
+    if (!buf) return false;
+
+    try {
+      const zip = new PizZip(buf);
+
+      const doc = new docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+        delimiters: { start: '{{', end: '}}' },
+        nullGetter() { return ''; },
+      });
+
+      doc.render(placeholders);
+
+      const outBlob = doc.getZip().generate({
+        type: 'blob',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        compression: 'DEFLATE',
+      });
+
+      saveAs(outBlob, filename + '.docx');
+      await renderDocxAndPrint(outBlob, filename);
+      return true;
+
+    } catch (err) {
+      console.error('DOCX generation error:', err);
+      const msg = err.properties && err.properties.errors
+        ? err.properties.errors.map(e => e.message).join('; ')
+        : err.message;
+      showToast('Template error: ' + msg, true);
+      return false;
+    }
+  };
+})();
 
 // ── Generate dispatcher ────────────────────────────────────
 async function generateDoc(id){
   const btn=document.querySelector(`#form-${id} .generate-btn`);
   btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Generating...';
   try{await _gen(id);}finally{
-    btn.disabled=false;btn.textContent='⚡ Generate '+id.toUpperCase();
+    btn.disabled=false;
+    const labels={spa:'SPA',fco:'FCO',skr:'SKR',ndaMelox:'NDA',termsheet:'Termsheet',
+                  cma:'CMA',invoice:'Invoice',invitation:'Letter',jetlinx:'Jetlinx',samSpa:'samSPA'};
+    btn.textContent='⚡ Generate '+(labels[id]||id.toUpperCase());
   }
 }
 
@@ -739,7 +780,11 @@ async function _gen(id){
     if(!buyer){showToast('Select at least one Buyer responsibility',true);return;}
     if(!seller){showToast('Select at least one Seller responsibility',true);return;}
     const clause=`The Buyer shall be responsible for ${buyer} and the Seller shall be responsible for ${seller}.`;
-    const ok=await fillAndDownload('spa',{'{{DATE}}':today,'{{QUANTITY}}':qty+' Kilograms (kgs)','{{DESTINATION}}':dest,'{{PRICE}}':'USD '+fmtMoney(price),'{{PRICE_WORDS}}':p2w(price),'{{CLAUSE}}':clause,'{{STAMP_DATE}}':stamp},`SPA_${qty}`);
+    const ok=await fillAndDownload('spa',{
+      DATE:today,QUANTITY:qty+' Kilograms (kgs)',DESTINATION:dest,
+      PRICE:'USD '+fmtMoney(price),PRICE_WORDS:p2w(price),
+      CLAUSE:clause,STAMP_DATE:stamp
+    },`SPA_${qty}`);
     if(ok)showToast('✓ SPA downloaded!');
   }
 
@@ -753,7 +798,11 @@ async function _gen(id){
     if(!buyer){showToast('Select Buyer responsibility',true);return;}
     if(!seller){showToast('Select Seller responsibility',true);return;}
     const clause=`The Buyer shall be responsible for ${buyer} and the Seller shall be responsible for ${seller}.`;
-    const ok=await fillAndDownload('fco',{'{{DATE}}':today,'{{QUANTITY}}':qty+' Kilograms (kgs)','{{DESTINATION}}':dest,'{{PRICE}}':'USD '+fmtMoney(price),'{{PRICE_WORDS}}':p2w(price),'{{NATURE}}':getRadio('fco-nature'),'{{CLAUSE}}':clause,'{{STAMP_DATE}}':stamp},`FCO_${qty}`);
+    const ok=await fillAndDownload('fco',{
+      DATE:today,QUANTITY:qty+' Kilograms (kgs)',DESTINATION:dest,
+      PRICE:'USD '+fmtMoney(price),PRICE_WORDS:p2w(price),
+      NATURE:getRadio('fco-nature'),CLAUSE:clause,STAMP_DATE:stamp
+    },`FCO_${qty}`);
     if(ok)showToast('✓ FCO downloaded!');
   }
 
@@ -770,7 +819,10 @@ async function _gen(id){
     const dp=date.split('/');
     const skrStamp=dp.length===3?`${dp[0]} ${M[parseInt(dp[1])-1]} ${dp[2]}`:stamp;
     const rcpt=counters.skr;
-    const ok=await fillAndDownload('skr',{'{{RECEIPT_NO}}':rcpt,'{{REF_NO}}':ref,'{{DATE}}':date,'{{HOLDER}}':holder,'{{QUANTITY}}':qty+' '+getRadio('skr-unit'),'{{ORIGIN}}':origin,'{{STAMP_DATE}}':skrStamp},`SKR_${qty}`);
+    const ok=await fillAndDownload('skr',{
+      RECEIPT_NO:rcpt,REF_NO:ref,DATE:date,HOLDER:holder,
+      QUANTITY:qty+' '+getRadio('skr-unit'),ORIGIN:origin,STAMP_DATE:skrStamp
+    },`SKR_${qty}`);
     if(ok){saveCounter('skr',rcpt+1);showToast('✓ SKR downloaded!');}
   }
 
@@ -779,7 +831,9 @@ async function _gen(id){
     const name=document.getElementById('nda-name').value.trim();
     if(!req(name,'Client Name'))return;
     const addr=document.getElementById('nda-address').value.trim();
-    const ok=await fillAndDownload('ndaMelox',{'{{CLIENT_NAME}}':name,'{{CLIENT_ADDRESS}}':addr},`NDA_MELOX_${name.replace(/ /g,'_')}`);
+    const ok=await fillAndDownload('ndaMelox',{
+      CLIENT_NAME:name,CLIENT_ADDRESS:addr
+    },`NDA_MELOX_${name.replace(/ /g,'_')}`);
     if(ok)showToast('✓ NDA Melox downloaded!');
   }
 
@@ -788,7 +842,11 @@ async function _gen(id){
     const amount=document.getElementById('ts-amount').value.trim();
     const client=document.getElementById('ts-client').value.trim();
     if(!req(amount,'Amount')||!req(client,'Client Name'))return;
-    const ok=await fillAndDownload('termsheet',{'{{AMOUNT}}':'USD '+fmtMoney(amount),'{{CLIENT_NAME}}':client,'{{GRACE_PERIOD}}':getRadio('ts-grace'),'{{RETURN_PERIOD}}':getRadio('ts-return'),'{{TENURE}}':getRadio('ts-tenure')},`Indicative_Termsheet_${client.replace(/ /g,'_')}`);
+    const ok=await fillAndDownload('termsheet',{
+      AMOUNT:'USD '+fmtMoney(amount),CLIENT_NAME:client,
+      GRACE_PERIOD:getRadio('ts-grace'),RETURN_PERIOD:getRadio('ts-return'),
+      TENURE:getRadio('ts-tenure')
+    },`Indicative_Termsheet_${client.replace(/ /g,'_')}`);
     if(ok)showToast('✓ Termsheet downloaded!');
   }
 
@@ -805,7 +863,9 @@ async function _gen(id){
     else if(hasQty&&!hasPrc)tx=`The Parties have entered into a transaction involving ${qty} kilograms of gold.`;
     else if(!hasQty&&hasPrc)tx=`The Parties have entered into a gold transaction at a unit price of United States Dollars ${p2w(price)} (USD ${fmtMoney(price)}) per kilogram.`;
     else tx=`The Parties have entered into a transaction involving ${qty} kilograms of gold at a unit price of United States Dollars ${p2w(price)} (USD ${fmtMoney(price)}) per kilogram.`;
-    const ok=await fillAndDownload('cma',{'{{DATE}}':today,'{{TRANSACTION_SENTENCE}}':tx,'{{BASIS}}':basis,'{{LOCATION}}':loc,'{{STAMP_DATE}}':stamp},`CMA_${n.toISOString().slice(0,10)}`);
+    const ok=await fillAndDownload('cma',{
+      DATE:today,TRANSACTION_SENTENCE:tx,BASIS:basis,LOCATION:loc,STAMP_DATE:stamp
+    },`CMA_${n.toISOString().slice(0,10)}`);
     if(ok)showToast('✓ CMA downloaded!');
   }
 
@@ -819,7 +879,10 @@ async function _gen(id){
     if(!checked.length){showToast('Select at least one charge',true);return;}
     const pQty=parseFloat(qty),pPrc=parseFloat(price);
     let total=0;
-    const ph={'{{INVOICE_NO}}':`HAQ/INV/${counters.invoice}/${n.getFullYear()}`,'{{DATE}}':today,'{{QUANTITY}}':qty+' Kilograms (kgs)','{{STAMP_DATE}}':stamp};
+    const ph={
+      INVOICE_NO:`HAQ/INV/${counters.invoice}/${n.getFullYear()}`,
+      DATE:today,QUANTITY:qty+' Kilograms (kgs)',STAMP_DATE:stamp
+    };
     const BANK='PAYMENT DETAILS (USD ACCOUNT)\nAccount Name: Musyoka, Shikumo & Associates Advocates LLP\nAccount Number: 8702489083000\nBank: Standard Chartered Bank (K) Limited\nBranch: Chiromo Branch\nBank Code: 02\nSWIFT Code: SCBLKENXXX\nCurrency: USD';
     const WALLET='Wallet Payment Details:\nTHBUv9Q4hCL7P55z8BkeaaCA2w5QATnrN5\nTRC 20';
     let pay='';
@@ -827,7 +890,7 @@ async function _gen(id){
     if(document.getElementById('pay-wallet').checked)pay+=WALLET+'\n\n';
     if(document.getElementById('pay-alt-bank').checked)pay+=document.getElementById('inv-alt-bank').value+'\n\n';
     if(document.getElementById('pay-alt-wallet').checked)pay+=document.getElementById('inv-alt-wallet').value+'\n\n';
-    ph['{{PAYMENT_DETAILS}}']=pay.trim();
+    ph['PAYMENT_DETAILS']=pay.trim();
     let rn=1;
     rows.forEach((row,idx)=>{
       if(!row.querySelector('input[type=checkbox]').checked)return;
@@ -841,12 +904,12 @@ async function _gen(id){
         const r=RATES[chargeRates[idx]]/100;amt=pQty*pPrc*r;rate=RATES[chargeRates[idx]]+'%';
       }
       total+=amt;
-      ph[`{{ROW_${rn}}}`]=rn;ph[`{{DESC_${rn}}}`]=desc;
-      ph[`{{RATE_${rn}}}`]=rate;ph[`{{AMT_${rn}}}`]=fmtMoney(amt.toFixed(2));
+      ph[`ROW_${rn}`]=rn;ph[`DESC_${rn}`]=desc;
+      ph[`RATE_${rn}`]=rate;ph[`AMT_${rn}`]=fmtMoney(amt.toFixed(2));
       rn++;
     });
-    for(let i=rn;i<=10;i++){ph[`{{ROW_${i}}}`]='';ph[`{{DESC_${i}}}`]='';ph[`{{RATE_${i}}}`]='';ph[`{{AMT_${i}}}`]='';}
-    ph['{{TOTAL_AMOUNT}}']=fmtMoney(total.toFixed(2));
+    for(let i=rn;i<=10;i++){ph[`ROW_${i}`]='';ph[`DESC_${i}`]='';ph[`RATE_${i}`]='';ph[`AMT_${i}`]='';}
+    ph['TOTAL_AMOUNT']=fmtMoney(total.toFixed(2));
     const invNum=counters.invoice;
     const ok=await fillAndDownload('invoice',ph,`INVOICE_HAQ-INV-${invNum}-${n.getFullYear()}`);
     if(ok){saveCounter('invoice',invNum+1);showToast('✓ Invoice downloaded!');}
@@ -858,8 +921,12 @@ async function _gen(id){
     if(!req(name,'Client Name'))return;
     const title=getRadio('il-gender'),first=name.split(' ')[0];
     const pass=document.getElementById('il-passport').value.trim();
-    const ph={'{{DATE}}':today,'{{FULL_NAME}}':title+' '+name,'{{SALUTATION}}':'Dear '+title+' '+first,'{{STAMP_DATE}}':stamp,'{{PASSPORT_NO}}':pass?'Passport Number: '+pass:''};
-    const ok=await fillAndDownload('invitation',ph,`InvitationLetter_${title}_${name.replace(/ /g,'_')}`);
+    const ok=await fillAndDownload('invitation',{
+      DATE:today,FULL_NAME:title+' '+name,
+      SALUTATION:'Dear '+title+' '+first,
+      STAMP_DATE:stamp,
+      PASSPORT_NO:pass?'Passport Number: '+pass:''
+    },`InvitationLetter_${title}_${name.replace(/ /g,'_')}`);
     if(ok)showToast('✓ Invitation Letter downloaded!');
   }
 
@@ -888,8 +955,13 @@ async function _gen(id){
     const bSum=base.reduce((a,b)=>a+b,0),tAmt=parseFloat(total);
     const rowAmts=base.map((b,i)=>i<7?Math.floor((b/bSum)*tAmt):0);
     rowAmts[7]=tAmt-rowAmts.slice(0,7).reduce((a,b)=>a+b,0);
-    const ph={'{{REF_NO}}':refStr,'{{CHARTER}}':charter,'{{DATE1}}':date1,'{{DATE2}}':date2,'{{EXPIRY_DATE}}':expiry,'{{WEIGHT}}':weight+' Tons','{{TOWN}}':town,'{{COUNTRY}}':country,'{{CODE}}':code,'{{FLIGHT_TIME1}}':ft1,'{{FLIGHT_TIME2}}':ft2,'{{PAX}}':pax,'{{CREW}}':crew,'{{TOTAL_AMOUNT}}':fmtMoney(tAmt),'{{DIST_MILES}}':miles,'{{DIST_KM}}':km,'{{STAMP_DATE}}':stamp};
-    rowAmts.forEach((r,i)=>{ph[`{{ROW_AMOUNT${i+1}}}`]=fmtMoney(r);});
+    const ph={
+      REF_NO:refStr,CHARTER:charter,DATE1:date1,DATE2:date2,EXPIRY_DATE:expiry,
+      WEIGHT:weight+' Tons',TOWN:town,COUNTRY:country,CODE:code,
+      FLIGHT_TIME1:ft1,FLIGHT_TIME2:ft2,PAX:pax,CREW:crew,
+      TOTAL_AMOUNT:fmtMoney(tAmt),DIST_MILES:miles,DIST_KM:km,STAMP_DATE:stamp
+    };
+    rowAmts.forEach((r,i)=>{ph[`ROW_AMOUNT${i+1}`]=fmtMoney(r);});
     const ok=await fillAndDownload('jetlinx',ph,`Jetlinx-NBO-${code}`);
     if(ok){saveCounter('jetlinx',refNum+1);showToast('✓ Jetlinx downloaded!');}
   }
@@ -901,7 +973,10 @@ async function _gen(id){
     if(!req(qty,'Quantity')||!req(price,'Price'))return;
     const nn=new Date(),m=pad(nn.getMonth()+1);
     const refNum=counters.samspa,refStr=`C${refNum}/${m}/${nn.getFullYear()}`;
-    const ok=await fillAndDownload('samSpa',{'{{DATE}}':todayUp,'{{REF_NO}}':refStr,'{{PRICE}}':'USD '+fmtMoney(price),'{{QUANTITY}}':qty+' KGS'},`SALES AND PURCHASE AGREEMENT_(${qty})KGS`);
+    const ok=await fillAndDownload('samSpa',{
+      DATE:todayUp,REF_NO:refStr,
+      PRICE:'USD '+fmtMoney(price),QUANTITY:qty+' KGS'
+    },`SALES AND PURCHASE AGREEMENT_(${qty})KGS`);
     if(ok){saveCounter('samspa',refNum+1);showToast('✓ samSPA downloaded!');}
   }
 }
