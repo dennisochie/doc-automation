@@ -555,40 +555,108 @@ function escXml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
 }
 
-async function fillAndDownload(id,placeholders,filename){
-  const buf=await loadTemplate(id);
-  if(!buf)return false;
-  try{
-    const zip=await JSZip.loadAsync(buf);
-    const file=zip.file('word/document.xml');
-    if(!file)throw new Error('Invalid docx');
-    let xml=await file.async('string');
-    for(const[k,v]of Object.entries(placeholders)){
-      const esc=k.replace(/[{}]/g,'\\$&');
-      xml=xml.replace(new RegExp(esc,'g'),escXml(String(v??'')));
-    }
-    zip.file('word/document.xml',xml);
-    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
-    saveAs(blob,filename+'.docx');
+/**
+ * Word splits placeholder text like {{DATE}} across multiple <w:r> runs.
+ * This function merges consecutive runs that share the same run-properties (<w:rPr>)
+ * so that placeholders become whole strings that can be found and replaced.
+ *
+ * Strategy:
+ *  1. Strip XML entities in text nodes so {{ and }} are visible as raw chars.
+ *  2. Within each <w:p> paragraph, collapse consecutive <w:r> runs that have
+ *     identical <w:rPr> (or both lack one) into a single run.
+ *  3. Do the placeholder replacements on the merged XML.
+ *  4. Re-escape any replacement values properly.
+ */
+function mergeRunsInXml(xml) {
+  // We operate at the paragraph level to avoid merging across paragraphs.
+  return xml.replace(/(<w:p[ >][\s\S]*?<\/w:p>)/g, function(para) {
+    // Repeatedly merge adjacent runs with same rPr until no more merges happen
+    let prev;
+    do {
+      prev = para;
+      para = para.replace(
+        /(<w:r\b[^>]*>)((?:<w:rPr>[\s\S]*?<\/w:rPr>)?)<w:t(?:[^>]*)>([\s\S]*?)<\/w:t><\/w:r>\s*<w:r\b[^>]*>((?:<w:rPr>[\s\S]*?<\/w:rPr>)?)<w:t(?:[^>]*)>([\s\S]*?)<\/w:t><\/w:r>/g,
+        function(match, rOpen, rPr1, t1, rPr2, t2) {
+          // Only merge if both runs have the same rPr (including both being empty)
+          if (rPr1 !== rPr2) return match;
+          const combined = t1 + t2;
+          // Preserve xml:space="preserve" if either text had spaces at edges
+          const space = /^ | $/.test(combined) ? ' xml:space="preserve"' : '';
+          return `${rOpen}${rPr1}<w:t${space}>${combined}</w:t></w:r>`;
+        }
+      );
+    } while (para !== prev);
+    return para;
+  });
+}
 
-    // PDF — simple text summary
-    const{jsPDF}=window.jspdf;
-    const doc=new jsPDF();
-    doc.setFontSize(14);doc.setFont('helvetica','bold');
-    doc.text(filename,10,15);
-    doc.setFontSize(10);doc.setFont('helvetica','normal');
-    let y=28;
-    for(const[k,v]of Object.entries(placeholders)){
-      if(!v||!String(v).trim())continue;
-      const label=k.replace(/[{}]/g,'');
-      const lines=doc.splitTextToSize(`${label}: ${v}`,185);
-      if(y+lines.length*6>280){doc.addPage();y=15;}
-      doc.text(lines,10,y);y+=lines.length*6+2;
+async function fillAndDownload(id, placeholders, filename) {
+  const buf = await loadTemplate(id);
+  if (!buf) return false;
+  try {
+    const zip = await JSZip.loadAsync(buf);
+
+    // Process document.xml plus any headers/footers
+    const xmlFiles = ['word/document.xml'];
+    zip.forEach((path) => {
+      if (/^word\/(header|footer)\d*\.xml$/.test(path)) xmlFiles.push(path);
+    });
+
+    for (const path of xmlFiles) {
+      const file = zip.file(path);
+      if (!file) continue;
+      let xml = await file.async('string');
+
+      // Step 1: merge fragmented runs so placeholders are whole strings
+      xml = mergeRunsInXml(xml);
+
+      // Step 2: replace placeholders
+      for (const [k, v] of Object.entries(placeholders)) {
+        const esc = k.replace(/[{}]/g, '\\$&');
+        xml = xml.replace(new RegExp(esc, 'g'), escXml(String(v ?? '')));
+      }
+
+      zip.file(path, xml);
     }
-    doc.save(filename+'.pdf');
+
+    // Download .docx
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    saveAs(blob, filename + '.docx');
+
+    // PDF — extract plain text from the filled document.xml and render it
+    const docFile = zip.file('word/document.xml');
+    if (docFile) {
+      const filledXml = await docFile.async('string');
+      // Extract text content from w:t elements, joining paragraphs with newlines
+      const paragraphs = [];
+      filledXml.replace(/<w:p[ >][\s\S]*?<\/w:p>/g, function(para) {
+        const texts = [];
+        para.replace(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g, function(_, t) {
+          texts.push(t.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'"));
+        });
+        const line = texts.join('').trim();
+        if (line) paragraphs.push(line);
+        return '';
+      });
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      let y = 15;
+      for (const line of paragraphs) {
+        const lines = doc.splitTextToSize(line, 185);
+        if (y + lines.length * 6 > 285) { doc.addPage(); y = 15; }
+        doc.text(lines, 10, y);
+        y += lines.length * 6 + 2;
+      }
+      doc.save(filename + '.pdf');
+    }
+
     return true;
-  }catch(e){
-    showToast('Error: '+e.message,true);return false;
+  } catch (e) {
+    showToast('Error: ' + e.message, true);
+    return false;
   }
 }
 
