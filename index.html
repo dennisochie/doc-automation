@@ -6,7 +6,7 @@
 <title>Doc Automation</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -623,41 +623,98 @@ async function fillAndDownload(id, placeholders, filename) {
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
     saveAs(blob, filename + '.docx');
 
-    // PDF — extract plain text from the filled document.xml and render it
-    const docFile = zip.file('word/document.xml');
-    if (docFile) {
-      const filledXml = await docFile.async('string');
-      // Extract text content from w:t elements, joining paragraphs with newlines
-      const paragraphs = [];
-      filledXml.replace(/<w:p[ >][\s\S]*?<\/w:p>/g, function(para) {
-        const texts = [];
-        para.replace(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g, function(_, t) {
-          texts.push(t.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'"));
-        });
-        const line = texts.join('').trim();
-        if (line) paragraphs.push(line);
-        return '';
-      });
-
-      const { jsPDF } = window.jspdf;
-      const doc = new jsPDF();
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'normal');
-      let y = 15;
-      for (const line of paragraphs) {
-        const lines = doc.splitTextToSize(line, 185);
-        if (y + lines.length * 6 > 285) { doc.addPage(); y = 15; }
-        doc.text(lines, 10, y);
-        y += lines.length * 6 + 2;
-      }
-      doc.save(filename + '.pdf');
-    }
+    // PDF — render the filled docx faithfully (preserving layout, images, tables)
+    // then open a print dialog so the user can Save as PDF
+    await renderDocxAndPrint(blob, filename);
 
     return true;
   } catch (e) {
     showToast('Error: ' + e.message, true);
     return false;
   }
+}
+
+/**
+ * Renders the filled docx blob using docx-preview inside a hidden iframe,
+ * then triggers the browser print dialog so the user can "Save as PDF".
+ * This preserves all images, tables, fonts and layout from the template.
+ */
+async function renderDocxAndPrint(blob, filename) {
+  return new Promise((resolve) => {
+    // Create a fullscreen overlay with the rendered document
+    const overlay = document.createElement('div');
+    overlay.id = 'pdf-overlay';
+    overlay.style.cssText = `
+      position:fixed;inset:0;z-index:9999;background:#fff;
+      display:flex;flex-direction:column;overflow:hidden;
+    `;
+
+    const toolbar = document.createElement('div');
+    toolbar.style.cssText = `
+      background:#1a1d27;color:#e8eaf6;padding:12px 16px;
+      display:flex;align-items:center;justify-content:space-between;
+      font-family:'Segoe UI',sans-serif;font-size:14px;flex-shrink:0;
+      border-bottom:1px solid #2e3350;
+    `;
+    toolbar.innerHTML = `
+      <span>📄 <strong>${filename}</strong> — ready to save as PDF</span>
+      <div style="display:flex;gap:10px">
+        <button onclick="window.frames['docx-print-frame'].focus();window.frames['docx-print-frame'].print()"
+          style="background:#4f7cff;color:#fff;border:none;border-radius:8px;
+                 padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;">
+          🖨️ Save as PDF
+        </button>
+        <button onclick="document.getElementById('pdf-overlay').remove()"
+          style="background:#22263a;color:#e8eaf6;border:1px solid #2e3350;
+                 border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;">
+          ✕ Close
+        </button>
+      </div>
+    `;
+
+    const iframe = document.createElement('iframe');
+    iframe.name = 'docx-print-frame';
+    iframe.style.cssText = 'flex:1;border:none;background:#fff;';
+
+    overlay.appendChild(toolbar);
+    overlay.appendChild(iframe);
+    document.body.appendChild(overlay);
+
+    // Write a blank page into the iframe first
+    const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+    iDoc.open();
+    iDoc.write(`<!DOCTYPE html><html><head>
+      <style>
+        body{margin:0;padding:20px;background:#f0f0f0;font-family:sans-serif;}
+        #container{background:#fff;max-width:210mm;margin:0 auto;
+                   box-shadow:0 2px 16px rgba(0,0,0,.2);padding:0;}
+        @media print{
+          body{background:#fff;padding:0;}
+          #container{box-shadow:none;max-width:100%;}
+        }
+      </style>
+    </head><body><div id="container"></div></body></html>`);
+    iDoc.close();
+
+    // Use docx-preview to render into the iframe's container div
+    const container = iDoc.getElementById('container');
+    const previewOptions = {
+      inWrapper: false,
+      ignoreWidth: false,
+      ignoreHeight: false,
+      ignoreFonts: false,
+      breakPages: true,
+      useBase64URL: true,       // needed for images to show in iframe
+      useMathMLPolyfill: false,
+    };
+
+    docx.renderAsync(blob, container, null, previewOptions)
+      .then(() => { resolve(); })
+      .catch((err) => {
+        console.warn('docx-preview error:', err);
+        resolve(); // still resolve so docx download isn't blocked
+      });
+  });
 }
 
 // ── Generate dispatcher ────────────────────────────────────
