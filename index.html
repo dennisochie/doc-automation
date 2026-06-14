@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Doc Automation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--card:#22263a;--border:#2e3350;
+  --accent:#4f7cff;--accent2:#7c5cff;--success:#22c55e;
+  --text:#e8eaf6;--muted:#8b90b0;--radius:14px;
+  --font:'Segoe UI',system-ui,sans-serif;
+}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:40px}
+.header{background:linear-gradient(135deg,#1a1d27,#22263a);border-bottom:1px solid var(--border);padding:20px 16px 16px;text-align:center;position:sticky;top:0;z-index:100}
+.header h1{font-size:20px;font-weight:700;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header p{font-size:12px;color:var(--muted);margin-top:4px}
+.dashboard{padding:20px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.doc-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 12px;cursor:pointer;text-align:center;transition:all .2s;position:relative;overflow:hidden}
+.doc-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:0;transition:opacity .2s}
+.doc-card:active{transform:scale(.97)}
+.doc-card:active::before{opacity:1}
+.doc-card .icon{font-size:28px;margin-bottom:8px}
+.doc-card .name{font-size:12px;font-weight:600;color:var(--text);line-height:1.3}
+.form-view{display:none;padding:16px}
+.form-view.active{display:block}
+.form-header{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.back-btn{background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:8px 14px;font-size:14px;cursor:pointer}
+.form-title{font-size:16px;font-weight:700}
+.field{margin-bottom:16px}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.field label span.opt{font-weight:400;text-transform:none;letter-spacing:0;font-size:11px}
+.field input,.field textarea,.field select{width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:15px;font-family:var(--font);outline:none;transition:border-color .2s}
+.field input:focus,.field textarea:focus{border-color:var(--accent)}
+.preview-text{font-size:12px;color:var(--success);margin-top:6px;min-height:18px;font-style:italic}
+.info-box{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--muted);margin-bottom:16px}
+.info-box strong{color:var(--text)}
+.radio-group,.check-group{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.radio-group label,.check-group label{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer;font-size:13px;font-weight:500;color:var(--text);text-transform:none;letter-spacing:0;transition:all .15s}
+.radio-group input[type=radio],.check-group input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
+.radio-group label:has(input:checked),.check-group label:has(input:checked){border-color:var(--accent);background:rgba(79,124,255,.1);color:var(--accent)}
+.section-label{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin:20px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.charge-row{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:border-color .15s}
+.charge-row.selected{border-color:var(--accent);background:rgba(79,124,255,.07)}
+.charge-row input[type=checkbox]{accent-color:var(--accent);width:18px;height:18px;flex-shrink:0}
+.charge-row .charge-name{flex:1;font-size:14px;background:transparent;border:none;color:var(--text)}
+.charge-row .charge-rate{font-size:12px;color:var(--success);font-weight:600;white-space:nowrap}
+.rate-selector{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:8px;display:none}
+.rate-selector.visible{display:block}
+.rate-selector p{font-size:12px;color:var(--accent);font-weight:600;margin-bottom:8px}
+.rate-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.rate-btn{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px 2px;font-size:11px;color:var(--muted);cursor:pointer;text-align:center;transition:all .15s}
+.rate-btn.selected{background:var(--accent);color:#fff;border-color:var(--accent)}
+.generate-btn{width:100%;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:var(--radius);padding:16px;font-size:16px;font-weight:700;cursor:pointer;margin-top:24px;transition:opacity .2s}
+.generate-btn:active{opacity:.85}
+.generate-btn:disabled{opacity:.5;cursor:not-allowed}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--card);border:1px solid var(--border);border-left:4px solid var(--success);border-radius:var(--radius);padding:14px 20px;font-size:14px;color:var(--text);z-index:999;max-width:90vw;text-align:center;transition:transform .3s ease;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.toast.show{transform:translateX(-50%) translateY(0)}
+.toast.error{border-left-color:#ef4444}
+.tpl-status{font-size:11px;padding:6px 10px;border-radius:6px;margin-bottom:12px;text-align:center}
+.tpl-status.ok{background:rgba(34,197,94,.1);color:var(--success);border:1px solid rgba(34,197,94,.3)}
+.tpl-status.loading{background:rgba(79,124,255,.1);color:var(--accent);border:1px solid rgba(79,124,255,.3)}
+.tpl-status.err{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚡ DOC AUTOMATION</h1>
+  <p>Select a document to generate</p>
+</div>
+
+<!-- DASHBOARD -->
+<div class="dashboard" id="dashboard">
+  <div class="doc-card" onclick="openForm('spa')"><div class="icon">📄</div><div class="name">SPA</div></div>
+  <div class="doc-card" onclick="openForm('fco')"><div class="icon">📋</div><div class="name">FCO</div></div>
+  <div class="doc-card" onclick="openForm('skr')"><div class="icon">🔐</div><div class="name">SKR</div></div>
+  <div class="doc-card" onclick="openForm('ndaMelox')"><div class="icon">🤝</div><div class="name">NDA MELOX</div></div>
+  <div class="doc-card" onclick="openForm('termsheet')"><div class="icon">📊</div><div class="name">INDICATIVE TERMSHEET</div></div>
+  <div class="doc-card" onclick="openForm('cma')"><div class="icon">📦</div><div class="name">CMA</div></div>
+  <div class="doc-card" onclick="openForm('invoice')"><div class="icon">🧾</div><div class="name">INVOICE</div></div>
+  <div class="doc-card" onclick="openForm('invitation')"><div class="icon">✉️</div><div class="name">INVITATION LETTER</div></div>
+  <div class="doc-card" onclick="openForm('jetlinx')"><div class="icon">✈️</div><div class="name">JETLINX</div></div>
+  <div class="doc-card" onclick="openForm('samSpa')"><div class="icon">📝</div><div class="name">samSPA</div></div>
+</div>
+
+<!-- SPA FORM -->
+<div class="form-view" id="form-spa">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Sale &amp; Purchase Agreement</div></div>
+  <div id="tpl-status-spa" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Date:</strong> <span id="spa-date-preview"></span> (auto)</div>
+  <div class="field"><label>Quantity (kgs)</label><input type="number" id="spa-qty" placeholder="e.g. 150"></div>
+  <div class="field"><label>Destination</label><input type="text" id="spa-dest" placeholder="e.g. Dubai, UAE"></div>
+  <div class="field"><label>Price (USD)</label><input type="number" id="spa-price" placeholder="e.g. 85000" oninput="updatePricePreview('spa-price','spa-price-preview')"><div class="preview-text" id="spa-price-preview"></div></div>
+  <div class="section-label">Clause</div>
+  <div class="field"><label>Buyer Pays For</label><div class="check-group" id="spa-buyer-checks">
+    <label><input type="checkbox" value="smelting fees"> Smelting fees</label>
+    <label><input type="checkbox" value="documentation charges"> Documentation charges</label>
+    <label><input type="checkbox" value="shipping and freight costs"> Shipping &amp; freight</label>
+    <label><input type="checkbox" value="insurance premiums"> Insurance</label>
+    <label><input type="checkbox" value="customs and duties"> Customs &amp; duties</label>
+    <label><input type="checkbox" value="assay and testing fees"> Assay &amp; testing</label>
+  </div></div>
+  <div class="field"><label>Seller Pays For</label><div class="check-group" id="spa-seller-checks">
+    <label><input type="checkbox" value="smelting fees"> Smelting fees</label>
+    <label><input type="checkbox" value="documentation charges"> Documentation charges</label>
+    <label><input type="checkbox" value="shipping and freight costs"> Shipping &amp; freight</label>
+    <label><input type="checkbox" value="insurance premiums"> Insurance</label>
+    <label><input type="checkbox" value="customs and duties"> Customs &amp; duties</label>
+    <label><input type="checkbox" value="assay and testing fees"> Assay &amp; testing</label>
+  </div></div>
+  <button class="generate-btn" onclick="generateDoc('spa')">⚡ Generate SPA</button>
+</div>
+
+<!-- FCO FORM -->
+<div class="form-view" id="form-fco">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Full Corporate Offer</div></div>
+  <div id="tpl-status-fco" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Date:</strong> <span id="fco-date-preview"></span> (auto)</div>
+  <div class="field"><label>Quantity (kgs)</label><input type="number" id="fco-qty" placeholder="e.g. 150"></div>
+  <div class="field"><label>Destination</label><input type="text" id="fco-dest" placeholder="e.g. Dubai, UAE"></div>
+  <div class="field"><label>Price (USD)</label><input type="number" id="fco-price" placeholder="e.g. 85000" oninput="updatePricePreview('fco-price','fco-price-preview')"><div class="preview-text" id="fco-price-preview"></div></div>
+  <div class="field"><label>Nature of Gold</label><div class="radio-group">
+    <label><input type="radio" name="fco-nature" value="Nuggets" checked> Nuggets</label>
+    <label><input type="radio" name="fco-nature" value="Bars"> Bars</label>
+  </div></div>
+  <div class="section-label">Clause</div>
+  <div class="field"><label>Buyer Pays For</label><div class="check-group" id="fco-buyer-checks">
+    <label><input type="checkbox" value="smelting fees"> Smelting fees</label>
+    <label><input type="checkbox" value="documentation charges"> Documentation charges</label>
+    <label><input type="checkbox" value="shipping and freight costs"> Shipping &amp; freight</label>
+    <label><input type="checkbox" value="insurance premiums"> Insurance</label>
+    <label><input type="checkbox" value="customs and duties"> Customs &amp; duties</label>
+    <label><input type="checkbox" value="assay and testing fees"> Assay &amp; testing</label>
+  </div></div>
+  <div class="field"><label>Seller Pays For</label><div class="check-group" id="fco-seller-checks">
+    <label><input type="checkbox" value="smelting fees"> Smelting fees</label>
+    <label><input type="checkbox" value="documentation charges"> Documentation charges</label>
+    <label><input type="checkbox" value="shipping and freight costs"> Shipping &amp; freight</label>
+    <label><input type="checkbox" value="insurance premiums"> Insurance</label>
+    <label><input type="checkbox" value="customs and duties"> Customs &amp; duties</label>
+    <label><input type="checkbox" value="assay and testing fees"> Assay &amp; testing</label>
+  </div></div>
+  <button class="generate-btn" onclick="generateDoc('fco')">⚡ Generate FCO</button>
+</div>
+
+<!-- SKR FORM -->
+<div class="form-view" id="form-skr">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Safe Keeping Receipt</div></div>
+  <div id="tpl-status-skr" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Receipt No:</strong> <span id="skr-receipt-preview"></span> (auto)</div>
+  <div class="field"><label>Reference Number</label><input type="text" id="skr-ref" placeholder="e.g. REF-2026-001"></div>
+  <div class="field"><label>Date (DD/MM/YYYY)</label><input type="text" id="skr-date"></div>
+  <div class="field"><label>Holder</label><input type="text" id="skr-holder" placeholder="Holder name"></div>
+  <div class="field"><label>Quantity</label><input type="number" id="skr-qty" placeholder="e.g. 150"></div>
+  <div class="field"><label>Unit</label><div class="radio-group">
+    <label><input type="radio" name="skr-unit" value="Kilograms (kgs)" checked> Kilograms (kgs)</label>
+    <label><input type="radio" name="skr-unit" value="Pallets"> Pallets</label>
+  </div></div>
+  <div class="field"><label>Country of Origin</label><div class="radio-group">
+    <label><input type="radio" name="skr-origin" value="EAC" checked onchange="toggleOther('skr-origin','other','skr-origin-other')"> EAC</label>
+    <label><input type="radio" name="skr-origin" value="other" onchange="toggleOther('skr-origin','other','skr-origin-other')"> Other</label>
+  </div>
+  <input type="text" id="skr-origin-other" placeholder="Enter country" style="display:none;margin-top:8px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text)"></div>
+  <button class="generate-btn" onclick="generateDoc('skr')">⚡ Generate SKR</button>
+</div>
+
+<!-- NDA MELOX FORM -->
+<div class="form-view" id="form-ndaMelox">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">NDA Melox</div></div>
+  <div id="tpl-status-ndaMelox" class="tpl-status loading">Loading template...</div>
+  <div class="field"><label>Client Name</label><input type="text" id="nda-name" placeholder="Full name"></div>
+  <div class="field"><label>Client Address <span class="opt">(optional)</span></label><input type="text" id="nda-address" placeholder="Leave blank if not needed"></div>
+  <button class="generate-btn" onclick="generateDoc('ndaMelox')">⚡ Generate NDA</button>
+</div>
+
+<!-- TERMSHEET FORM -->
+<div class="form-view" id="form-termsheet">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Indicative Termsheet</div></div>
+  <div id="tpl-status-termsheet" class="tpl-status loading">Loading template...</div>
+  <div class="field"><label>Amount (USD)</label><input type="number" id="ts-amount" placeholder="e.g. 30000" oninput="updatePricePreview('ts-amount','ts-amount-preview')"><div class="preview-text" id="ts-amount-preview"></div></div>
+  <div class="field"><label>Client Name</label><input type="text" id="ts-client" placeholder="Full name"></div>
+  <div class="field"><label>Grace Period</label><div class="radio-group">
+    <label><input type="radio" name="ts-grace" value="2 Months" checked> 2 Months</label>
+    <label><input type="radio" name="ts-grace" value="10 Months"> 10 Months</label>
+  </div></div>
+  <div class="field"><label>Return Period</label><div class="radio-group">
+    <label><input type="radio" name="ts-return" value="2 Months" checked> 2 Months</label>
+    <label><input type="radio" name="ts-return" value="5 Months"> 5 Months</label>
+  </div></div>
+  <div class="field"><label>Tenure</label><div class="radio-group">
+    <label><input type="radio" name="ts-tenure" value="Ten (10) Years" checked> Ten (10) Years</label>
+    <label><input type="radio" name="ts-tenure" value="Five (5) Years"> Five (5) Years</label>
+  </div></div>
+  <button class="generate-btn" onclick="generateDoc('termsheet')">⚡ Generate Termsheet</button>
+</div>
+
+<!-- CMA FORM -->
+<div class="form-view" id="form-cma">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Collateral Management Agreement</div></div>
+  <div id="tpl-status-cma" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Date:</strong> <span id="cma-date-preview"></span> (auto)</div>
+  <div class="field"><label>Quantity (kgs) <span class="opt">(optional)</span></label><input type="number" id="cma-qty" placeholder="Leave blank if not needed"></div>
+  <div class="field"><label>Price (USD) <span class="opt">(optional)</span></label><input type="number" id="cma-price" placeholder="Leave blank if not needed" oninput="updatePricePreview('cma-price','cma-price-preview')"><div class="preview-text" id="cma-price-preview"></div></div>
+  <div class="field"><label>Basis</label><div class="radio-group">
+    <label><input type="radio" name="cma-basis" value="Single" checked> Single</label>
+    <label><input type="radio" name="cma-basis" value="Joint"> Joint</label>
+  </div></div>
+  <div class="field"><label>Location</label><div class="radio-group">
+    <label><input type="radio" name="cma-loc" value="MySafe located at Village Market" checked onchange="toggleOther('cma-loc','other','cma-loc-other')"> MySafe - Village Market</label>
+    <label><input type="radio" name="cma-loc" value="other" onchange="toggleOther('cma-loc','other','cma-loc-other')"> Other</label>
+  </div>
+  <input type="text" id="cma-loc-other" placeholder="located at ..." style="display:none;margin-top:8px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text)"></div>
+  <button class="generate-btn" onclick="generateDoc('cma')">⚡ Generate CMA</button>
+</div>
+
+<!-- INVOICE FORM -->
+<div class="form-view" id="form-invoice">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Invoice</div></div>
+  <div id="tpl-status-invoice" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Invoice No:</strong> <span id="inv-no-preview"></span> (auto)</div>
+  <div class="field"><label>Quantity (kgs)</label><input type="number" id="inv-qty" placeholder="e.g. 150"></div>
+  <div class="field"><label>Price (USD/kg)</label><input type="number" id="inv-price" placeholder="e.g. 90000"></div>
+  <div class="section-label">Charges — tap a row then pick its rate</div>
+  <div id="inv-charges">
+    <div class="charge-row" onclick="selectCharge(this,0)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,0)"><input class="charge-name" value="Insurance Fee"><span class="charge-rate" id="cr-0">—</span></div>
+    <div class="charge-row" onclick="selectCharge(this,1)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,1)"><input class="charge-name" value="Transport Fee"><span class="charge-rate" id="cr-1">—</span></div>
+    <div class="charge-row" onclick="selectCharge(this,2)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,2)"><input class="charge-name" value="Custom Handling Fee"><span class="charge-rate" id="cr-2">—</span></div>
+    <div class="charge-row" onclick="selectCharge(this,3)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,3)"><input class="charge-name" value="Documentation Charges"><span class="charge-rate" id="cr-3">—</span></div>
+    <div class="charge-row" onclick="selectCharge(this,4)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,4)"><input class="charge-name" value="Smelting Fee"><span class="charge-rate" id="cr-4">$100/kg</span></div>
+    <div class="charge-row" onclick="selectCharge(this,5)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,5)"><input class="charge-name" value="Logistics Fee"><span class="charge-rate" id="cr-5">—</span></div>
+    <div class="charge-row" onclick="selectCharge(this,6)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,6)"><input class="charge-name" value="Government Taxes"><span class="charge-rate" id="cr-6">—</span></div>
+    <div class="charge-row" onclick="selectCharge(this,7)"><input type="checkbox" onclick="event.stopPropagation()" onchange="toggleCharge(this,7)"><input class="charge-name" placeholder="Other charge..."><span class="charge-rate" id="cr-7">—</span></div>
+  </div>
+  <div class="rate-selector" id="inv-rate-selector">
+    <p id="inv-rate-label">Tap a charge above first</p>
+    <div class="rate-grid" id="inv-rate-grid"></div>
+    <div style="margin-top:10px;display:none" id="lme-section">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)">
+        <input type="checkbox" id="inv-lme-check" onchange="toggleLME()"> Use LME price for Insurance
+      </label>
+      <input type="number" id="inv-lme-price" placeholder="LME price (USD/kg)" style="display:none;margin-top:8px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text)">
+    </div>
+  </div>
+  <div class="section-label">Payment Details</div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <label style="display:flex;align-items:center;gap:8px;font-size:14px"><input type="checkbox" id="pay-bank" checked style="accent-color:var(--accent);width:18px;height:18px"> Default Bank Account</label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:14px"><input type="checkbox" id="pay-wallet" checked style="accent-color:var(--accent);width:18px;height:18px"> Default Wallet (TRC20)</label>
+    <div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px"><input type="checkbox" id="pay-alt-bank" style="accent-color:var(--accent);width:18px;height:18px" onchange="toggleEl('inv-alt-bank',this.checked)"> Alternative Bank Account</label>
+      <textarea id="inv-alt-bank" placeholder="Enter bank details..." style="display:none;margin-top:8px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text);font-size:13px;min-height:80px"></textarea>
+    </div>
+    <div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px"><input type="checkbox" id="pay-alt-wallet" style="accent-color:var(--accent);width:18px;height:18px" onchange="toggleEl('inv-alt-wallet',this.checked)"> Alternative Wallet</label>
+      <input type="text" id="inv-alt-wallet" placeholder="Wallet address..." style="display:none;margin-top:8px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text)">
+    </div>
+  </div>
+  <button class="generate-btn" onclick="generateDoc('invoice')">⚡ Generate Invoice</button>
+</div>
+
+<!-- INVITATION LETTER FORM -->
+<div class="form-view" id="form-invitation">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Invitation Letter</div></div>
+  <div id="tpl-status-invitation" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Date:</strong> <span id="il-date-preview"></span> (auto)</div>
+  <div class="field"><label>Gender</label><div class="radio-group">
+    <label><input type="radio" name="il-gender" value="Mr." checked onchange="updateILPreview()"> Male</label>
+    <label><input type="radio" name="il-gender" value="Mrs." onchange="updateILPreview()"> Female</label>
+  </div></div>
+  <div class="field"><label>Client Full Name</label><input type="text" id="il-name" placeholder="First Last" oninput="updateILPreview()"><div class="preview-text" id="il-preview"></div></div>
+  <div class="field"><label>Passport Number <span class="opt">(optional)</span></label><input type="text" id="il-passport" placeholder="Leave blank if not needed"></div>
+  <button class="generate-btn" onclick="generateDoc('invitation')">⚡ Generate Letter</button>
+</div>
+
+<!-- JETLINX FORM -->
+<div class="form-view" id="form-jetlinx">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Jetlinx Charter</div></div>
+  <div id="tpl-status-jetlinx" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Ref No:</strong> <span id="jl-ref-preview"></span> (auto)</div>
+  <div class="field"><label>Charter Aircraft</label><div class="radio-group">
+    <label><input type="radio" name="jl-charter" value="G550 GulfStream" checked onchange="toggleEl('jl-charter-other',false)"> G550 GulfStream</label>
+    <label><input type="radio" name="jl-charter" value="other" onchange="toggleEl('jl-charter-other',true)"> Other</label>
+  </div>
+  <input type="text" id="jl-charter-other" placeholder="Aircraft name" style="display:none;margin-top:8px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text)"></div>
+  <div class="field"><label>Date 1 (auto, editable)</label><input type="text" id="jl-date1"></div>
+  <div class="field"><label>Date 2 (auto, editable)</label><input type="text" id="jl-date2"></div>
+  <div class="field"><label>Expiry Date (auto, editable)</label><input type="text" id="jl-expiry"></div>
+  <div class="field"><label>Town</label><input type="text" id="jl-town" placeholder="e.g. LAGOS"></div>
+  <div class="field"><label>Country</label><input type="text" id="jl-country" placeholder="e.g. NIGERIA"></div>
+  <div class="field"><label>Code</label><input type="text" id="jl-code" placeholder="e.g. LOS"></div>
+  <div class="field"><label>Weight (Tons)</label><input type="number" id="jl-weight" placeholder="e.g. 8"></div>
+  <div class="field"><label>Flight Hours</label><input type="number" id="jl-hours" placeholder="e.g. 4" oninput="updateJLPreview()"></div>
+  <div class="field"><label>Flight Minutes</label><input type="number" id="jl-mins" placeholder="e.g. 46" oninput="updateJLPreview()"><div class="preview-text" id="jl-flight-preview"></div></div>
+  <div class="field"><label>Pax</label><input type="number" id="jl-pax" value="3"></div>
+  <div class="field"><label>Crew</label><input type="number" id="jl-crew" value="4"></div>
+  <div class="field"><label>Total Amount (USD)</label><input type="number" id="jl-total" placeholder="e.g. 168000"></div>
+  <div class="field"><label>Distance (Miles)</label><input type="number" id="jl-miles"></div>
+  <div class="field"><label>Distance (Km)</label><input type="number" id="jl-km"></div>
+  <button class="generate-btn" onclick="generateDoc('jetlinx')">⚡ Generate Jetlinx</button>
+</div>
+
+<!-- samSPA FORM -->
+<div class="form-view" id="form-samSpa">
+  <div class="form-header"><button class="back-btn" onclick="goBack()">← Back</button><div class="form-title">Sales &amp; Purchase Agreement</div></div>
+  <div id="tpl-status-samSpa" class="tpl-status loading">Loading template...</div>
+  <div class="info-box"><strong>Ref No:</strong> <span id="samspa-ref-preview"></span> (auto)<br><strong>Date:</strong> <span id="samspa-date-preview"></span> (auto)</div>
+  <div class="field"><label>Quantity (kgs)</label><input type="number" id="samspa-qty" placeholder="e.g. 150"></div>
+  <div class="field"><label>Price (USD)</label><input type="number" id="samspa-price" placeholder="e.g. 85000" oninput="updatePricePreview('samspa-price','samspa-price-preview')"><div class="preview-text" id="samspa-price-preview"></div></div>
+  <button class="generate-btn" onclick="generateDoc('samSpa')">⚡ Generate samSPA</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Template paths (relative to repo root) ─────────────────
+const TEMPLATE_PATHS = {
+  spa:        'Automation/SPA/SPA_TEMPLATE.docx',
+  fco:        'Automation/FCO/FCO_TEMPLATE.docx',
+  skr:        'Automation/SKR/SKR_TEMPLATE.docx',
+  ndaMelox:   'Automation/NDA_MELOX/NDA_MELOX_TEMPLATE.docx',
+  termsheet:  'Automation/Indicative_Termsheet_Melox/Indicative_Termsheet_Melox_TEMPLATE.docx',
+  cma:        'Automation/CMA/CMA_TEMPLATE.docx',
+  invoice:    'Automation/INVOICE/INVOICE_TEMPLATE.docx',
+  invitation: 'Automation/InvitationLetter/InvitationLetter_TEMPLATE.docx',
+  jetlinx:    'Automation/Jetlinx/Jetlinx_TEMPLATE.docx',
+  samSpa:     'Automation/samSPA/samSPA_TEMPLATE.docx',
+};
+
+// ── Cache — templates fetched once, stored in memory ───────
+const templateCache = {};
+
+async function loadTemplate(id) {
+  if (templateCache[id]) return templateCache[id];
+  const status = document.getElementById('tpl-status-' + id);
+  try {
+    status.className = 'tpl-status loading';
+    status.textContent = 'Loading template...';
+    const res = await fetch(TEMPLATE_PATHS[id]);
+    if (!res.ok) throw new Error('Not found');
+    const buf = await res.arrayBuffer();
+    templateCache[id] = buf;
+    status.className = 'tpl-status ok';
+    status.textContent = '✓ Template loaded';
+    return buf;
+  } catch(e) {
+    status.className = 'tpl-status err';
+    status.textContent = '✗ Template not found — check Automation folder in repo';
+    return null;
+  }
+}
+
+// ── Counters (localStorage) ────────────────────────────────
+const counters = {
+  skr:     parseInt(localStorage.getItem('ctr_skr')     || '2013'),
+  invoice: parseInt(localStorage.getItem('ctr_invoice') || '382'),
+  jetlinx: parseInt(localStorage.getItem('ctr_jetlinx') || '72819'),
+  samspa:  parseInt(localStorage.getItem('ctr_samspa')  || '7591'),
+};
+function saveCounter(k, v) { counters[k] = v; localStorage.setItem('ctr_'+k, v); }
+
+// ── Date helpers ───────────────────────────────────────────
+function ordSfx(d) {
+  if(d>=11&&d<=13)return'th';
+  const r=d%10;
+  return r===1?'st':r===2?'nd':r===3?'rd':'th';
+}
+function todayOrdinal(upper=false) {
+  const n=new Date(),d=n.getDate();
+  const m=n.toLocaleString('en-GB',{month:'long'});
+  return `${d}${ordSfx(d)} ${upper?m.toUpperCase():m} ${n.getFullYear()}`;
+}
+function todaySlash() {
+  const n=new Date();
+  return `${pad(n.getDate())}/${pad(n.getMonth()+1)}/${n.getFullYear()}`;
+}
+function todayStamp() {
+  const M=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const n=new Date();
+  return `${pad(n.getDate())} ${M[n.getMonth()]} ${n.getFullYear()}`;
+}
+function todayDash(addMonths=0) {
+  const M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const n=new Date(); n.setMonth(n.getMonth()+addMonths);
+  return `${pad(n.getDate())}-${M[n.getMonth()]}-${n.getFullYear()}`;
+}
+function pad(n){return String(n).padStart(2,'0')}
+
+// ── Number helpers ─────────────────────────────────────────
+function fmtMoney(n){return Number(n).toLocaleString('en-US')}
+function n2w(n){
+  n=Math.floor(n);
+  if(!n)return'Zero';
+  const o=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const t=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function b(n){return n<20?o[n]:n<100?t[~~(n/10)]+(n%10?' '+o[n%10]:''):o[~~(n/100)]+' Hundred'+(n%100?' '+b(n%100):'');}
+  let r='';
+  if(n>=1e6){r+=b(~~(n/1e6))+' Million ';n%=1e6;}
+  if(n>=1e3){r+=b(~~(n/1e3))+' Thousand ';n%=1e3;}
+  if(n>0)r+=b(n);
+  return r.trim();
+}
+function p2w(p){
+  const v=parseFloat(String(p).replace(/,/g,''));
+  const d=Math.floor(v),c=Math.round((v-d)*100);
+  let r=n2w(d)+' United States Dollars';
+  if(c>0)r+=' And '+n2w(c)+' Cents';
+  return r;
+}
+function getChecked(gid){
+  return[...document.querySelectorAll('#'+gid+' input[type=checkbox]:checked')].map(c=>c.value).join(' and ');
+}
+function getRadio(name){const e=document.querySelector(`input[name="${name}"]:checked`);return e?e.value:'';}
+
+// ── UI helpers ─────────────────────────────────────────────
+function showToast(msg,err=false){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className='toast'+(err?' error':'');
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),3500);
+}
+function req(v,n){if(!v||!String(v).trim()){showToast('Please enter: '+n,true);return false;}return true;}
+function toggleEl(id,show){document.getElementById(id).style.display=show?'block':'none';}
+function toggleOther(name,otherVal,otherId){
+  const v=document.querySelector(`input[name="${name}"]:checked`)?.value;
+  document.getElementById(otherId).style.display=v===otherVal?'block':'none';
+}
+
+// ── Navigation ─────────────────────────────────────────────
+function openForm(id){
+  document.getElementById('dashboard').style.display='none';
+  document.querySelectorAll('.form-view').forEach(f=>f.classList.remove('active'));
+  document.getElementById('form-'+id).classList.add('active');
+  initForm(id);
+  loadTemplate(id);
+  window.scrollTo(0,0);
+}
+function goBack(){
+  document.getElementById('dashboard').style.display='grid';
+  document.querySelectorAll('.form-view').forEach(f=>f.classList.remove('active'));
+}
+
+// ── Init form previews ─────────────────────────────────────
+function initForm(id){
+  const today=todayOrdinal(),todayUp=todayOrdinal(true),stamp=todayStamp();
+  if(id==='spa')document.getElementById('spa-date-preview').textContent=today;
+  if(id==='fco')document.getElementById('fco-date-preview').textContent=today;
+  if(id==='skr'){
+    document.getElementById('skr-receipt-preview').textContent=counters.skr;
+    document.getElementById('skr-date').value=todaySlash();
+  }
+  if(id==='cma')document.getElementById('cma-date-preview').textContent=today;
+  if(id==='invoice'){
+    document.getElementById('inv-no-preview').textContent=`HAQ/INV/${counters.invoice}/${new Date().getFullYear()}`;
+    buildRateGrid();
+  }
+  if(id==='invitation'){
+    document.getElementById('il-date-preview').textContent=today;
+  }
+  if(id==='jetlinx'){
+    document.getElementById('jl-ref-preview').textContent='Jetlinx'+counters.jetlinx;
+    document.getElementById('jl-date1').value=todayDash();
+    document.getElementById('jl-date2').value=todaySlash();
+    document.getElementById('jl-expiry').value=todayDash(1);
+  }
+  if(id==='samSpa'){
+    const n=new Date(),m=pad(n.getMonth()+1);
+    document.getElementById('samspa-ref-preview').textContent=`C${counters.samspa}/${m}/${n.getFullYear()}`;
+    document.getElementById('samspa-date-preview').textContent=todayUp;
+  }
+}
+
+// ── Price preview ──────────────────────────────────────────
+function updatePricePreview(iid,pid){
+  const v=parseFloat(document.getElementById(iid).value);
+  document.getElementById(pid).textContent=isNaN(v)||v<=0?'':'→ USD '+fmtMoney(v)+'  ('+p2w(v)+')';
+}
+
+// ── Invitation preview ─────────────────────────────────────
+function updateILPreview(){
+  const title=getRadio('il-gender'),name=document.getElementById('il-name').value.trim();
+  if(!name){document.getElementById('il-preview').textContent='';return;}
+  const first=name.split(' ')[0];
+  document.getElementById('il-preview').textContent=`${title} ${name}  |  Dear ${title} ${first}`;
+}
+
+// ── Jetlinx flight preview ─────────────────────────────────
+function updateJLPreview(){
+  const h=document.getElementById('jl-hours').value,m=document.getElementById('jl-mins').value;
+  if(h&&m)document.getElementById('jl-flight-preview').textContent=`→ ${h}:${pad(m)} HRS  /  ${h} hours and ${m} minutes`;
+}
+
+// ── Invoice charge / rate ──────────────────────────────────
+const RATES=[0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7];
+const chargeRates=new Array(8).fill(null);
+let selectedCharge=-1;
+const SMELTING=4,INSURANCE=0;
+
+function selectCharge(row,idx){
+  document.querySelectorAll('.charge-row').forEach(r=>r.classList.remove('selected'));
+  row.classList.add('selected');
+  selectedCharge=idx;
+  const sel=document.getElementById('inv-rate-selector');
+  sel.classList.add('visible');
+  const lmeSec=document.getElementById('lme-section');
+  if(idx===SMELTING){
+    document.getElementById('inv-rate-label').textContent='Smelting Fee: fixed $100/kg';
+    document.getElementById('inv-rate-grid').style.pointerEvents='none';
+    document.getElementById('inv-rate-grid').style.opacity='0.3';
+    lmeSec.style.display='none';
+  } else {
+    const desc=row.querySelector('.charge-name').value||'charge';
+    document.getElementById('inv-rate-label').textContent='Rate for: '+desc;
+    document.getElementById('inv-rate-grid').style.pointerEvents='auto';
+    document.getElementById('inv-rate-grid').style.opacity='1';
+    lmeSec.style.display=idx===INSURANCE?'block':'none';
+  }
+  highlightRate();
+}
+function toggleCharge(chk,idx){
+  const row=chk.closest('.charge-row');
+  if(chk.checked)selectCharge(row,idx);
+  else row.classList.remove('selected');
+}
+function buildRateGrid(){
+  const g=document.getElementById('inv-rate-grid');g.innerHTML='';
+  RATES.forEach((r,i)=>{
+    const b=document.createElement('div');
+    b.className='rate-btn';b.textContent=r+'%';
+    b.onclick=()=>assignRate(i);g.appendChild(b);
+  });
+}
+function assignRate(idx){
+  if(selectedCharge<0||selectedCharge===SMELTING)return;
+  chargeRates[selectedCharge]=idx;
+  document.getElementById('cr-'+selectedCharge).textContent=RATES[idx]+'%';
+  highlightRate();
+}
+function highlightRate(){
+  document.querySelectorAll('.rate-btn').forEach(b=>b.classList.remove('selected'));
+  if(selectedCharge>=0&&chargeRates[selectedCharge]!==null)
+    document.querySelectorAll('.rate-btn')[chargeRates[selectedCharge]]?.classList.add('selected');
+}
+function toggleLME(){
+  toggleEl('inv-lme-price',document.getElementById('inv-lme-check').checked);
+}
+
+// ── Fill & download ────────────────────────────────────────
+function escXml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+}
+
+async function fillAndDownload(id,placeholders,filename){
+  const buf=await loadTemplate(id);
+  if(!buf)return false;
+  try{
+    const zip=await JSZip.loadAsync(buf);
+    const file=zip.file('word/document.xml');
+    if(!file)throw new Error('Invalid docx');
+    let xml=await file.async('string');
+    for(const[k,v]of Object.entries(placeholders)){
+      const esc=k.replace(/[{}]/g,'\\$&');
+      xml=xml.replace(new RegExp(esc,'g'),escXml(String(v??'')));
+    }
+    zip.file('word/document.xml',xml);
+    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
+    saveAs(blob,filename+'.docx');
+
+    // PDF — simple text summary
+    const{jsPDF}=window.jspdf;
+    const doc=new jsPDF();
+    doc.setFontSize(14);doc.setFont('helvetica','bold');
+    doc.text(filename,10,15);
+    doc.setFontSize(10);doc.setFont('helvetica','normal');
+    let y=28;
+    for(const[k,v]of Object.entries(placeholders)){
+      if(!v||!String(v).trim())continue;
+      const label=k.replace(/[{}]/g,'');
+      const lines=doc.splitTextToSize(`${label}: ${v}`,185);
+      if(y+lines.length*6>280){doc.addPage();y=15;}
+      doc.text(lines,10,y);y+=lines.length*6+2;
+    }
+    doc.save(filename+'.pdf');
+    return true;
+  }catch(e){
+    showToast('Error: '+e.message,true);return false;
+  }
+}
+
+// ── Generate dispatcher ────────────────────────────────────
+async function generateDoc(id){
+  const btn=document.querySelector(`#form-${id} .generate-btn`);
+  btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Generating...';
+  try{await _gen(id);}finally{
+    btn.disabled=false;btn.textContent='⚡ Generate '+id.toUpperCase();
+  }
+}
+
+async function _gen(id){
+  const today=todayOrdinal(),todayUp=todayOrdinal(true),stamp=todayStamp(),n=new Date();
+
+  // SPA
+  if(id==='spa'){
+    const qty=document.getElementById('spa-qty').value.trim();
+    const dest=document.getElementById('spa-dest').value.trim();
+    const price=document.getElementById('spa-price').value.trim();
+    if(!req(qty,'Quantity')||!req(dest,'Destination')||!req(price,'Price'))return;
+    const buyer=getChecked('spa-buyer-checks'),seller=getChecked('spa-seller-checks');
+    if(!buyer){showToast('Select at least one Buyer responsibility',true);return;}
+    if(!seller){showToast('Select at least one Seller responsibility',true);return;}
+    const clause=`The Buyer shall be responsible for ${buyer} and the Seller shall be responsible for ${seller}.`;
+    const ok=await fillAndDownload('spa',{'{{DATE}}':today,'{{QUANTITY}}':qty+' Kilograms (kgs)','{{DESTINATION}}':dest,'{{PRICE}}':'USD '+fmtMoney(price),'{{PRICE_WORDS}}':p2w(price),'{{CLAUSE}}':clause,'{{STAMP_DATE}}':stamp},`SPA_${qty}`);
+    if(ok)showToast('✓ SPA downloaded!');
+  }
+
+  // FCO
+  else if(id==='fco'){
+    const qty=document.getElementById('fco-qty').value.trim();
+    const dest=document.getElementById('fco-dest').value.trim();
+    const price=document.getElementById('fco-price').value.trim();
+    if(!req(qty,'Quantity')||!req(dest,'Destination')||!req(price,'Price'))return;
+    const buyer=getChecked('fco-buyer-checks'),seller=getChecked('fco-seller-checks');
+    if(!buyer){showToast('Select Buyer responsibility',true);return;}
+    if(!seller){showToast('Select Seller responsibility',true);return;}
+    const clause=`The Buyer shall be responsible for ${buyer} and the Seller shall be responsible for ${seller}.`;
+    const ok=await fillAndDownload('fco',{'{{DATE}}':today,'{{QUANTITY}}':qty+' Kilograms (kgs)','{{DESTINATION}}':dest,'{{PRICE}}':'USD '+fmtMoney(price),'{{PRICE_WORDS}}':p2w(price),'{{NATURE}}':getRadio('fco-nature'),'{{CLAUSE}}':clause,'{{STAMP_DATE}}':stamp},`FCO_${qty}`);
+    if(ok)showToast('✓ FCO downloaded!');
+  }
+
+  // SKR
+  else if(id==='skr'){
+    const ref=document.getElementById('skr-ref').value.trim();
+    const date=document.getElementById('skr-date').value.trim();
+    const holder=document.getElementById('skr-holder').value.trim();
+    const qty=document.getElementById('skr-qty').value.trim();
+    if(!req(ref,'Reference Number')||!req(date,'Date')||!req(holder,'Holder')||!req(qty,'Quantity'))return;
+    let origin=getRadio('skr-origin');
+    if(origin==='other'){origin=document.getElementById('skr-origin-other').value.trim();if(!req(origin,'Country of Origin'))return;}
+    const M=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    const dp=date.split('/');
+    const skrStamp=dp.length===3?`${dp[0]} ${M[parseInt(dp[1])-1]} ${dp[2]}`:stamp;
+    const rcpt=counters.skr;
+    const ok=await fillAndDownload('skr',{'{{RECEIPT_NO}}':rcpt,'{{REF_NO}}':ref,'{{DATE}}':date,'{{HOLDER}}':holder,'{{QUANTITY}}':qty+' '+getRadio('skr-unit'),'{{ORIGIN}}':origin,'{{STAMP_DATE}}':skrStamp},`SKR_${qty}`);
+    if(ok){saveCounter('skr',rcpt+1);showToast('✓ SKR downloaded!');}
+  }
+
+  // NDA MELOX
+  else if(id==='ndaMelox'){
+    const name=document.getElementById('nda-name').value.trim();
+    if(!req(name,'Client Name'))return;
+    const addr=document.getElementById('nda-address').value.trim();
+    const ok=await fillAndDownload('ndaMelox',{'{{CLIENT_NAME}}':name,'{{CLIENT_ADDRESS}}':addr},`NDA_MELOX_${name.replace(/ /g,'_')}`);
+    if(ok)showToast('✓ NDA Melox downloaded!');
+  }
+
+  // TERMSHEET
+  else if(id==='termsheet'){
+    const amount=document.getElementById('ts-amount').value.trim();
+    const client=document.getElementById('ts-client').value.trim();
+    if(!req(amount,'Amount')||!req(client,'Client Name'))return;
+    const ok=await fillAndDownload('termsheet',{'{{AMOUNT}}':'USD '+fmtMoney(amount),'{{CLIENT_NAME}}':client,'{{GRACE_PERIOD}}':getRadio('ts-grace'),'{{RETURN_PERIOD}}':getRadio('ts-return'),'{{TENURE}}':getRadio('ts-tenure')},`Indicative_Termsheet_${client.replace(/ /g,'_')}`);
+    if(ok)showToast('✓ Termsheet downloaded!');
+  }
+
+  // CMA
+  else if(id==='cma'){
+    const qty=document.getElementById('cma-qty').value.trim();
+    const price=document.getElementById('cma-price').value.trim();
+    const basis=getRadio('cma-basis');
+    let loc=getRadio('cma-loc');
+    if(loc==='other')loc='located at '+document.getElementById('cma-loc-other').value.trim();
+    const hasQty=qty!=='',hasPrc=price!=='';
+    let tx='';
+    if(!hasQty&&!hasPrc)tx='The Parties have entered into a gold transaction.';
+    else if(hasQty&&!hasPrc)tx=`The Parties have entered into a transaction involving ${qty} kilograms of gold.`;
+    else if(!hasQty&&hasPrc)tx=`The Parties have entered into a gold transaction at a unit price of United States Dollars ${p2w(price)} (USD ${fmtMoney(price)}) per kilogram.`;
+    else tx=`The Parties have entered into a transaction involving ${qty} kilograms of gold at a unit price of United States Dollars ${p2w(price)} (USD ${fmtMoney(price)}) per kilogram.`;
+    const ok=await fillAndDownload('cma',{'{{DATE}}':today,'{{TRANSACTION_SENTENCE}}':tx,'{{BASIS}}':basis,'{{LOCATION}}':loc,'{{STAMP_DATE}}':stamp},`CMA_${n.toISOString().slice(0,10)}`);
+    if(ok)showToast('✓ CMA downloaded!');
+  }
+
+  // INVOICE
+  else if(id==='invoice'){
+    const qty=document.getElementById('inv-qty').value.trim();
+    const price=document.getElementById('inv-price').value.trim();
+    if(!req(qty,'Quantity')||!req(price,'Price'))return;
+    const rows=document.querySelectorAll('#inv-charges .charge-row');
+    const checked=[...rows].filter(r=>r.querySelector('input[type=checkbox]').checked);
+    if(!checked.length){showToast('Select at least one charge',true);return;}
+    const pQty=parseFloat(qty),pPrc=parseFloat(price);
+    let total=0;
+    const ph={'{{INVOICE_NO}}':`HAQ/INV/${counters.invoice}/${n.getFullYear()}`,'{{DATE}}':today,'{{QUANTITY}}':qty+' Kilograms (kgs)','{{STAMP_DATE}}':stamp};
+    const BANK='PAYMENT DETAILS (USD ACCOUNT)\nAccount Name: Musyoka, Shikumo & Associates Advocates LLP\nAccount Number: 8702489083000\nBank: Standard Chartered Bank (K) Limited\nBranch: Chiromo Branch\nBank Code: 02\nSWIFT Code: SCBLKENXXX\nCurrency: USD';
+    const WALLET='Wallet Payment Details:\nTHBUv9Q4hCL7P55z8BkeaaCA2w5QATnrN5\nTRC 20';
+    let pay='';
+    if(document.getElementById('pay-bank').checked)pay+=BANK+'\n\n';
+    if(document.getElementById('pay-wallet').checked)pay+=WALLET+'\n\n';
+    if(document.getElementById('pay-alt-bank').checked)pay+=document.getElementById('inv-alt-bank').value+'\n\n';
+    if(document.getElementById('pay-alt-wallet').checked)pay+=document.getElementById('inv-alt-wallet').value+'\n\n';
+    ph['{{PAYMENT_DETAILS}}']=pay.trim();
+    let rn=1;
+    rows.forEach((row,idx)=>{
+      if(!row.querySelector('input[type=checkbox]').checked)return;
+      const desc=row.querySelector('.charge-name').value;
+      let rate='',amt=0;
+      if(idx===SMELTING){rate='$100/kg';amt=pQty*100;}
+      else if(idx===INSURANCE&&document.getElementById('inv-lme-check').checked){
+        const lme=parseFloat(document.getElementById('inv-lme-price').value);
+        if(!isNaN(lme)){amt=pQty*lme*0.015;rate='1.5% LME';}
+      } else if(chargeRates[idx]!==null){
+        const r=RATES[chargeRates[idx]]/100;amt=pQty*pPrc*r;rate=RATES[chargeRates[idx]]+'%';
+      }
+      total+=amt;
+      ph[`{{ROW_${rn}}}`]=rn;ph[`{{DESC_${rn}}}`]=desc;
+      ph[`{{RATE_${rn}}}`]=rate;ph[`{{AMT_${rn}}}`]=fmtMoney(amt.toFixed(2));
+      rn++;
+    });
+    for(let i=rn;i<=10;i++){ph[`{{ROW_${i}}}`]='';ph[`{{DESC_${i}}}`]='';ph[`{{RATE_${i}}}`]='';ph[`{{AMT_${i}}}`]='';}
+    ph['{{TOTAL_AMOUNT}}']=fmtMoney(total.toFixed(2));
+    const invNum=counters.invoice;
+    const ok=await fillAndDownload('invoice',ph,`INVOICE_HAQ-INV-${invNum}-${n.getFullYear()}`);
+    if(ok){saveCounter('invoice',invNum+1);showToast('✓ Invoice downloaded!');}
+  }
+
+  // INVITATION
+  else if(id==='invitation'){
+    const name=document.getElementById('il-name').value.trim();
+    if(!req(name,'Client Name'))return;
+    const title=getRadio('il-gender'),first=name.split(' ')[0];
+    const pass=document.getElementById('il-passport').value.trim();
+    const ph={'{{DATE}}':today,'{{FULL_NAME}}':title+' '+name,'{{SALUTATION}}':'Dear '+title+' '+first,'{{STAMP_DATE}}':stamp,'{{PASSPORT_NO}}':pass?'Passport Number: '+pass:''};
+    const ok=await fillAndDownload('invitation',ph,`InvitationLetter_${title}_${name.replace(/ /g,'_')}`);
+    if(ok)showToast('✓ Invitation Letter downloaded!');
+  }
+
+  // JETLINX
+  else if(id==='jetlinx'){
+    const charterV=document.querySelector('input[name="jl-charter"]:checked').value;
+    const charter=charterV==='other'?document.getElementById('jl-charter-other').value.trim():charterV;
+    const date1=document.getElementById('jl-date1').value.trim();
+    const date2=document.getElementById('jl-date2').value.trim();
+    const expiry=document.getElementById('jl-expiry').value.trim();
+    const town=document.getElementById('jl-town').value.trim().toUpperCase();
+    const country=document.getElementById('jl-country').value.trim().toUpperCase();
+    const code=document.getElementById('jl-code').value.trim().toUpperCase();
+    const weight=document.getElementById('jl-weight').value.trim();
+    const hours=document.getElementById('jl-hours').value.trim();
+    const mins=document.getElementById('jl-mins').value.trim();
+    const pax=document.getElementById('jl-pax').value.trim();
+    const crew=document.getElementById('jl-crew').value.trim();
+    const total=document.getElementById('jl-total').value.trim();
+    const miles=document.getElementById('jl-miles').value.trim();
+    const km=document.getElementById('jl-km').value.trim();
+    if(!req(charter,'Charter')||!req(code,'Code')||!req(total,'Total Amount')||!req(hours,'Hours'))return;
+    const ft1=`${hours}:${pad(mins)} HRS`,ft2=`${hours} hours and ${mins} minutes`;
+    const refNum=counters.jetlinx,refStr='Jetlinx'+refNum;
+    const base=[123952,11012,13214,3524,3524,5286,3083,4405];
+    const bSum=base.reduce((a,b)=>a+b,0),tAmt=parseFloat(total);
+    const rowAmts=base.map((b,i)=>i<7?Math.floor((b/bSum)*tAmt):0);
+    rowAmts[7]=tAmt-rowAmts.slice(0,7).reduce((a,b)=>a+b,0);
+    const ph={'{{REF_NO}}':refStr,'{{CHARTER}}':charter,'{{DATE1}}':date1,'{{DATE2}}':date2,'{{EXPIRY_DATE}}':expiry,'{{WEIGHT}}':weight+' Tons','{{TOWN}}':town,'{{COUNTRY}}':country,'{{CODE}}':code,'{{FLIGHT_TIME1}}':ft1,'{{FLIGHT_TIME2}}':ft2,'{{PAX}}':pax,'{{CREW}}':crew,'{{TOTAL_AMOUNT}}':fmtMoney(tAmt),'{{DIST_MILES}}':miles,'{{DIST_KM}}':km,'{{STAMP_DATE}}':stamp};
+    rowAmts.forEach((r,i)=>{ph[`{{ROW_AMOUNT${i+1}}}`]=fmtMoney(r);});
+    const ok=await fillAndDownload('jetlinx',ph,`Jetlinx-NBO-${code}`);
+    if(ok){saveCounter('jetlinx',refNum+1);showToast('✓ Jetlinx downloaded!');}
+  }
+
+  // samSPA
+  else if(id==='samSpa'){
+    const qty=document.getElementById('samspa-qty').value.trim();
+    const price=document.getElementById('samspa-price').value.trim();
+    if(!req(qty,'Quantity')||!req(price,'Price'))return;
+    const nn=new Date(),m=pad(nn.getMonth()+1);
+    const refNum=counters.samspa,refStr=`C${refNum}/${m}/${nn.getFullYear()}`;
+    const ok=await fillAndDownload('samSpa',{'{{DATE}}':todayUp,'{{REF_NO}}':refStr,'{{PRICE}}':'USD '+fmtMoney(price),'{{QUANTITY}}':qty+' KGS'},`SALES AND PURCHASE AGREEMENT_(${qty})KGS`);
+    if(ok){saveCounter('samspa',refNum+1);showToast('✓ samSPA downloaded!');}
+  }
+}
+</script>
+</body>
+</html>
